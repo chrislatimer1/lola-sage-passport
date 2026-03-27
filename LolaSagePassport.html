@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <title>Lola's Sage Work Experience Passport 🌿</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap');
@@ -1531,6 +1532,171 @@
   }, { threshold: 0.3 });
 
   sections.forEach(s => navObserver.observe(s));
+</script>
+
+<script>
+// ===== SUPABASE STATE PERSISTENCE =====
+(function() {
+  const SUPABASE_URL = 'https://avhnfzktcvuxbwoeswrn.supabase.co';
+  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF2aG5memt0Y3Z1eGJ3b2Vzd3JuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2MjAzMzEsImV4cCI6MjA5MDE5NjMzMX0.jmUsz_Ob1cFcpBPvvHwVYzLWekcjXs_eVQznckWoEPM';
+  const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  let passphrase = localStorage.getItem('lola_passport_pp');
+  let saveTimer = null;
+  let indicator = null;
+
+  // --- Indicator ---
+  function showIndicator(msg, color) {
+    if (!indicator) {
+      indicator = document.createElement('div');
+      indicator.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#161616;border:1px solid #2a2a2a;border-radius:999px;padding:8px 18px;font-family:"Space Mono",monospace;font-size:11px;z-index:9998;transition:opacity 0.4s;pointer-events:none;';
+      document.body.appendChild(indicator);
+    }
+    indicator.style.color = color || '#00FF6B';
+    indicator.style.opacity = '1';
+    indicator.textContent = msg;
+  }
+
+  function fadeIndicator() {
+    if (indicator) indicator.style.opacity = '0';
+  }
+
+  // --- Collect state ---
+  function collectState() {
+    return {
+      inputs: Array.from(document.querySelectorAll('input[type="text"],input[type="number"]')).map(i => i.value),
+      textareas: Array.from(document.querySelectorAll('textarea')).map(t => t.value),
+      salary: (document.getElementById('salary-role') || {}).value || '',
+      bingo: Array.from(document.querySelectorAll('.bingo-cell:not(.free)')).map(c => c.classList.contains('stamped')),
+      emojis: ['monday-vibe','tuesday-vibe','wednesday-vibe','thursday-vibe'].reduce((acc, id) => {
+        const grp = document.getElementById(id);
+        acc[id] = grp ? Array.from(grp.querySelectorAll('.emoji-opt')).findIndex(e => e.classList.contains('picked')) : -1;
+        return acc;
+      }, {}),
+      choices: ['api-choices','path-choice'].reduce((acc, id) => {
+        const grp = document.getElementById(id);
+        acc[id] = grp ? Array.from(grp.querySelectorAll('.choice-btn')).findIndex(b => b.classList.contains('selected')) : -1;
+        return acc;
+      }, {}),
+      checklists: ['curiosity-list','next-steps'].reduce((acc, id) => {
+        const list = document.getElementById(id);
+        acc[id] = list ? Array.from(list.querySelectorAll('.check-box')).map(c => c.classList.contains('checked')) : [];
+        return acc;
+      }, {})
+    };
+  }
+
+  // --- Restore state ---
+  function restoreState(saved) {
+    const inputs = Array.from(document.querySelectorAll('input[type="text"],input[type="number"]'));
+    const textareas = Array.from(document.querySelectorAll('textarea'));
+    const salaryEl = document.getElementById('salary-role');
+
+    (saved.inputs || []).forEach((v, i) => { if (inputs[i]) inputs[i].value = v; });
+    (saved.textareas || []).forEach((v, i) => { if (textareas[i]) textareas[i].value = v; });
+
+    if (saved.salary && salaryEl) { salaryEl.value = saved.salary; updateSalary(); }
+
+    (saved.bingo || []).forEach((stamped, i) => {
+      const cells = Array.from(document.querySelectorAll('.bingo-cell:not(.free)'));
+      if (cells[i] && stamped) cells[i].classList.add('stamped');
+    });
+
+    Object.entries(saved.emojis || {}).forEach(([id, idx]) => {
+      if (idx < 0) return;
+      const grp = document.getElementById(id);
+      if (grp) { const opts = grp.querySelectorAll('.emoji-opt'); if (opts[idx]) pickEmoji(opts[idx], id); }
+    });
+
+    Object.entries(saved.choices || {}).forEach(([id, idx]) => {
+      if (idx < 0) return;
+      const grp = document.getElementById(id);
+      if (grp) { const btns = grp.querySelectorAll('.choice-btn'); if (btns[idx]) pickChoice(btns[idx], id); }
+    });
+
+    Object.entries(saved.checklists || {}).forEach(([id, checks]) => {
+      const list = document.getElementById(id);
+      if (!list) return;
+      const boxes = list.querySelectorAll('.check-box');
+      checks.forEach((checked, i) => { if (boxes[i] && checked) boxes[i].classList.add('checked'); });
+    });
+  }
+
+  // --- Save ---
+  async function doSave() {
+    if (!passphrase) return;
+    showIndicator('saving...');
+    const { error } = await db.from('passport_data').upsert(
+      { passphrase, data: collectState(), updated_at: new Date().toISOString() },
+      { onConflict: 'passphrase' }
+    );
+    if (error) { showIndicator('⚠ save failed', '#E84D4F'); console.error(error); }
+    else { showIndicator('✓ saved'); setTimeout(fadeIndicator, 2000); }
+  }
+
+  function debouncedSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(doSave, 2000);
+  }
+
+  // --- Load ---
+  async function loadState() {
+    if (!passphrase) return;
+    showIndicator('loading...');
+    const { data, error } = await db.from('passport_data').select('data').eq('passphrase', passphrase).single();
+    if (error && error.code !== 'PGRST116') { showIndicator('⚠ load failed', '#E84D4F'); console.error(error); return; }
+    if (data && data.data) { restoreState(data.data); showIndicator('✓ loaded'); setTimeout(fadeIndicator, 2000); }
+    else fadeIndicator();
+  }
+
+  // --- Attach listeners ---
+  function attachListeners() {
+    document.querySelectorAll('input,textarea,select').forEach(el => el.addEventListener('input', debouncedSave));
+  }
+
+  // --- Patch interactive functions to trigger save ---
+  ['toggleCheck','bingoCellClick','pickEmoji','pickChoice','updateSalary'].forEach(fn => {
+    const orig = window[fn];
+    window[fn] = function() { orig.apply(this, arguments); debouncedSave(); };
+  });
+
+  // --- Passphrase modal ---
+  function showPassphraseModal() {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    overlay.innerHTML = `
+      <div style="background:#161616;border:1px solid #2a2a2a;border-radius:16px;padding:40px;max-width:400px;width:90%;text-align:center;">
+        <div style="font-family:Syne,sans-serif;font-size:10px;letter-spacing:0.2em;color:#00FF6B;text-transform:uppercase;margin-bottom:12px;">Your Passport</div>
+        <h2 style="font-family:Syne,sans-serif;font-weight:800;color:#f5f5f5;margin-bottom:12px;font-size:22px;">Choose a passphrase</h2>
+        <p style="color:#888;font-size:13px;margin-bottom:24px;line-height:1.6;">This keeps your data synced across all your devices. Something simple works — like your name and a number.</p>
+        <input id="pp-input" type="text" placeholder="e.g. lola2026" autocomplete="off" style="width:100%;background:#1e1e1e;border:1px solid #2a2a2a;border-radius:10px;padding:12px 16px;color:#f5f5f5;font-family:'Space Mono',monospace;font-size:14px;outline:none;margin-bottom:16px;" />
+        <button id="pp-btn" style="background:#00FF6B;color:#0a0a0a;border:none;border-radius:999px;padding:14px 32px;font-family:Syne,sans-serif;font-weight:700;font-size:13px;letter-spacing:0.1em;text-transform:uppercase;cursor:pointer;width:100%;">Open my passport →</button>
+        <p style="color:#555;font-size:11px;margin-top:16px;line-height:1.6;">Already have a passphrase? Enter the same one to load your saved data.</p>
+      </div>`;
+    document.body.appendChild(overlay);
+    const input = document.getElementById('pp-input');
+    const btn = document.getElementById('pp-btn');
+    input.focus();
+    async function submit() {
+      const val = input.value.trim().toLowerCase();
+      if (!val) return;
+      passphrase = val;
+      localStorage.setItem('lola_passport_pp', val);
+      overlay.remove();
+      await loadState();
+      attachListeners();
+    }
+    btn.onclick = submit;
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  }
+
+  // --- Init ---
+  if (passphrase) {
+    loadState().then(() => attachListeners());
+  } else {
+    showPassphraseModal();
+  }
+})();
 </script>
 
 </body>
